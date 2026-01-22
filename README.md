@@ -44,7 +44,21 @@ pip install requests
 4. Paste this code and press Enter:
 
 ```javascript
-(webpackChunkdiscord_app.push([[''],{},e=>{m=[];for(let c in e.c)m.push(e.c[c])}]),m).find(m=>m?.exports?.default?.getToken!==void 0).exports.default.getToken()
+window.webpackChunkdiscord_app.push([
+    [Symbol()], {}, req => {
+        if (!req.c) return;
+        for (let m of Object.values(req.c)) {
+            if (!m.exports || m.exports === window) continue;
+            if (m.exports?.getToken) return console.log('"' + m.exports.getToken() + '"');
+            for (let ex in m.exports) {
+                if (m.exports?.[ex]?.getToken && m.exports[ex][Symbol.toStringTag] !== 'IntlMessagesProxy') {
+                    return console.log('"' + m.exports.getToken() + '"');
+                }
+            }
+        }
+    },
+]);
+window.webpackChunkdiscord_app.pop();
 ```
 
 5. Your token appears in quotes
