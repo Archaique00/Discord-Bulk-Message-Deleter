@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import json
 import os
 import sys
@@ -8,7 +9,8 @@ from datetime import datetime
 import requests
 
 # ========= CONFIGURATION =========
-TOKEN_FILE = "tokens.txt"  # Fichier contenant le token Discord
+TOKEN_FILE = "token.txt"  # Fichier contenant le token Discord
+WHITELIST_FILE = "whitelist.txt"  # Fichier contenant les IDs à exclure (un par ligne)
 DELAY_BETWEEN_DELETIONS = 1.5  # Secondes entre chaque suppression
 DELAY_BETWEEN_REQUESTS = 2.0   # Secondes entre les requêtes API
 REQ_TIMEOUT = 10
@@ -84,6 +86,39 @@ def load_token() -> Optional[str]:
     except Exception as e:
         print_error(f"Erreur lors de la lecture du fichier: {e}")
         return None
+
+def load_whitelist() -> set:
+    """Charge la whitelist (IDs à exclure) depuis le fichier whitelist.txt"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    whitelist_path = os.path.join(script_dir, WHITELIST_FILE)
+    
+    whitelist = set()
+    
+    if not os.path.exists(whitelist_path):
+        print_info(f"Fichier '{WHITELIST_FILE}' introuvable - aucune exclusion")
+        return whitelist
+    
+    try:
+        with open(whitelist_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        for line in lines:
+            line = line.strip()
+            # Ignorer les lignes vides et les commentaires
+            if line and not line.startswith('#'):
+                whitelist.add(line)
+        
+        if whitelist:
+            print_success(f"Whitelist chargée: {len(whitelist)} ID(s) exclus")
+            print_info("IDs exclus: " + ", ".join(list(whitelist)[:5]) + ("..." if len(whitelist) > 5 else ""))
+        else:
+            print_info("Whitelist vide - aucune exclusion")
+        
+        return whitelist
+        
+    except Exception as e:
+        print_error(f"Erreur lors de la lecture de la whitelist: {e}")
+        return set()
 
 class DiscordAPI:
     def __init__(self, token: str):
@@ -193,13 +228,15 @@ class DiscordAPI:
         return r is not None and r.status_code == 204
 
 class MessageDeleter:
-    def __init__(self, token: str):
+    def __init__(self, token: str, whitelist: set):
         self.api = DiscordAPI(token)
         self.user_info = None
+        self.whitelist = whitelist
         self.stats = {
             "total_scraped": 0,
             "total_deleted": 0,
             "failed_deletions": 0,
+            "whitelisted_skipped": 0,
             "servers_processed": 0,
             "dms_processed": 0
         }
@@ -229,11 +266,18 @@ class MessageDeleter:
             print_warning("Aucun serveur trouvé")
             return []
         
-        print_success(f"{len(guilds)} serveur(s) trouvé(s):\n")
-        for i, guild in enumerate(guilds, 1):
+        # Filtrer les serveurs en whitelist
+        filtered_guilds = [g for g in guilds if g.get('id') not in self.whitelist]
+        whitelisted_count = len(guilds) - len(filtered_guilds)
+        
+        if whitelisted_count > 0:
+            print_warning(f"{whitelisted_count} serveur(s) exclus par la whitelist")
+        
+        print_success(f"{len(filtered_guilds)} serveur(s) trouvé(s):\n")
+        for i, guild in enumerate(filtered_guilds, 1):
             print(f"  [{i}] {guild.get('name', 'Inconnu')} (ID: {guild.get('id')})")
         
-        return guilds
+        return filtered_guilds
     
     def list_dms(self) -> List[Dict]:
         """Liste tous les DMs/MPs."""
@@ -247,8 +291,15 @@ class MessageDeleter:
         # Filtrer pour ne garder que les DMs (type 1) et group DMs (type 3)
         dms = [dm for dm in dms if dm.get('type') in [1, 3]]
         
-        print_success(f"{len(dms)} conversation(s) trouvée(s):\n")
-        for i, dm in enumerate(dms, 1):
+        # Filtrer les DMs en whitelist
+        filtered_dms = [d for d in dms if d.get('id') not in self.whitelist]
+        whitelisted_count = len(dms) - len(filtered_dms)
+        
+        if whitelisted_count > 0:
+            print_warning(f"{whitelisted_count} conversation(s) exclue(s) par la whitelist")
+        
+        print_success(f"{len(filtered_dms)} conversation(s) trouvée(s):\n")
+        for i, dm in enumerate(filtered_dms, 1):
             if dm.get('type') == 1:  # DM privé
                 recipients = dm.get('recipients', [])
                 name = recipients[0].get('username', 'Inconnu') if recipients else 'Inconnu'
@@ -257,10 +308,15 @@ class MessageDeleter:
                 name = dm.get('name') or ', '.join([r.get('username', 'Inconnu') for r in dm.get('recipients', [])])
                 print(f"  [{i}] Groupe: {name} (ID: {dm.get('id')})")
         
-        return dms
+        return filtered_dms
     
     def save_messages_to_json(self, messages: List[Dict], filename: str):
         """Sauvegarde les messages dans un fichier JSON."""
+        # Nettoyer le nom de fichier des caractères invalides pour Windows
+        invalid_chars = '<>:"/\\|?*'
+        for char in invalid_chars:
+            filename = filename.replace(char, '_')
+        
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(messages, f, indent=2, ensure_ascii=False)
         print_success(f"Messages sauvegardés dans {filename}")
@@ -369,6 +425,8 @@ class MessageDeleter:
         print(f"  • Serveurs traités: {self.stats['servers_processed']}")
         print(f"  • MPs traités: {self.stats['dms_processed']}")
         print(f"  • Total messages scrapés: {self.stats['total_scraped']}")
+        if self.stats['whitelisted_skipped'] > 0:
+            print(f"  • {Colors.YELLOW}Messages exclus (whitelist): {self.stats['whitelisted_skipped']}{Colors.END}")
         print(f"  • {Colors.GREEN}Total messages supprimés: {self.stats['total_deleted']}{Colors.END}")
         print(f"  • {Colors.RED}Échecs de suppression: {self.stats['failed_deletions']}{Colors.END}")
         
@@ -434,7 +492,10 @@ def main():
             print_token_instructions()
         return
     
-    deleter = MessageDeleter(token)
+    # Charger la whitelist
+    whitelist = load_whitelist()
+    
+    deleter = MessageDeleter(token, whitelist)
     
     if not deleter.authenticate():
         return
@@ -518,4 +579,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
