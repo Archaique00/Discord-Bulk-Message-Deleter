@@ -326,7 +326,7 @@ A: No. Enable JSON backup if you want to keep a record before deletion.
 <details>
 <summary><b>Q: Does this work on mobile?</b></summary>
 <br>
-A: No, this is a Python script for desktop use only.
+A: Yes, you only need python for run the script (use termux for example).
 </details>
 
 <details>
